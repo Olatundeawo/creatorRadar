@@ -1,0 +1,53 @@
+// This is your datasource config
+datasource db {
+  provider = "postgresql"
+}
+
+// This generates the Prisma Client
+generator client {
+  provider = "prisma-client-js"
+}
+
+// Channel model for storing YouTube channel data
+model Channel {
+  id            String   @id @default(cuid())
+  youtubeId     String   @unique
+  name          String
+  description   String?  @db.Text
+  subscribers   String   // YouTube returns as string "1000000"
+  videoCount    String
+  email         String?
+  latestUpload  DateTime?
+  thumbnailUrl  String?
+  channelUrl    String
+  scrapedAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  // Indexes for faster queries
+  @@index([youtubeId])
+  @@index([name])
+  @@index([subscribers])
+  @@index([scrapedAt])
+}
+
+// Track search queries made
+model SearchQuery {
+  id          String   @id @default(cuid())
+  query       String
+  niche       String
+  resultCount Int
+  createdAt   DateTime @default(now())
+
+  @@index([query])
+  @@index([createdAt])
+}
+
+// Store export history
+model ExportHistory {
+  id        String   @id @default(cuid())
+  format    String   // "csv" or "xlsx"
+  count     Int      // number of channels exported
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+}
