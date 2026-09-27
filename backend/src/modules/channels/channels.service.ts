@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../prisma/prisma.service';
+import { ScraperService } from '../scraper/scraper.service';
 import { SearchChannelsDto } from './dto/search-channels.dto';
 import { ChannelResponseDto } from './dto/channel.response';
 
@@ -10,6 +11,7 @@ export class ChannelsService {
 
   constructor(
     private prisma: PrismaService,
+    private scraperService: ScraperService,
     private configService: ConfigService,
   ) {}
 
@@ -18,22 +20,32 @@ export class ChannelsService {
    */
   async search(dto: SearchChannelsDto): Promise<ChannelResponseDto[]> {
     try {
-      this.logger.log(`Searching YouTube for: ${dto.query}`);
+      this.logger.log(`🔍 Searching and scraping YouTube for: ${dto.query}`);
 
-      // For now, return empty array
-      // We'll implement YouTube API integration in Scraper module
-      const channels = [];
+      // Step 1: Search YouTube and enrich data
+      const enrichedChannels = await this.scraperService.searchAndEnrich(
+        dto.query,
+        dto.maxResults || 50,
+      );
 
-      // Save search query to track user searches
+      if (enrichedChannels.length === 0) {
+        this.logger.log(`No channels found for: ${dto.query}`);
+      }
+
+      // Step 2: Save to database
+      const savedChannels = await this.saveChannels(enrichedChannels);
+
+      // Step 3: Log search query
       await this.prisma.searchQuery.create({
         data: {
           query: dto.query,
           niche: dto.niche || 'general',
-          resultCount: channels.length,
+          resultCount: savedChannels.length,
         },
       });
 
-      return channels;
+      this.logger.log(`✅ Saved ${savedChannels.length} channels to database`);
+      return savedChannels;
     } catch (error) {
       this.logger.error(`Search failed: ${error.message}`, error);
       throw error;
@@ -63,14 +75,12 @@ export class ChannelsService {
       const sort = options.sort || 'scrapedAt';
       const order = options.order || 'desc';
 
-      // Validate pagination
       if (page < 1 || limit < 1) {
         throw new Error('Page and limit must be greater than 0');
       }
 
       const skip = (page - 1) * limit;
 
-      // Fetch channels and total count in parallel
       const [channels, total] = await Promise.all([
         this.prisma.channel.findMany({
           skip,
@@ -107,7 +117,7 @@ export class ChannelsService {
   }
 
   /**
-   * Save channels to database (used after scraping)
+   * Save channels to database (upsert)
    */
   async saveChannels(channels: any[]): Promise<ChannelResponseDto[]> {
     try {
@@ -120,7 +130,7 @@ export class ChannelsService {
               description: ch.description,
               subscribers: ch.subscribers,
               videoCount: ch.videoCount,
-              email: ch.email,
+              email: ch.email || null,
               latestUpload: ch.latestUpload,
               thumbnailUrl: ch.thumbnailUrl,
               channelUrl: ch.channelUrl,
@@ -128,10 +138,10 @@ export class ChannelsService {
             create: {
               youtubeId: ch.youtubeId,
               name: ch.name,
-              description: ch.description,
+              description: ch.description || null,
               subscribers: ch.subscribers,
               videoCount: ch.videoCount,
-              email: ch.email,
+              email: ch.email || null,
               latestUpload: ch.latestUpload,
               thumbnailUrl: ch.thumbnailUrl,
               channelUrl: ch.channelUrl,
@@ -140,7 +150,7 @@ export class ChannelsService {
         ),
       );
 
-      this.logger.log(`Saved ${saved.length} channels to database`);
+      this.logger.log(`✅ Saved ${saved.length} channels to database`);
       return saved;
     } catch (error) {
       this.logger.error(`Failed to save channels: ${error.message}`, error);
@@ -163,4 +173,10 @@ export class ChannelsService {
   async getTotalCount(): Promise<number> {
     return this.prisma.channel.count();
   }
+
+  async getAllChannels(): Promise<ChannelResponseDto[]> {
+  return this.prisma.channel.findMany({
+    orderBy: { scrapedAt: 'desc' },
+  });
+}
 }
