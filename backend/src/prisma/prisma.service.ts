@@ -14,10 +14,23 @@ export class PrismaService extends PrismaClient implements OnModuleDestroy {
       throw new Error('DATABASE_URL environment variable is not set');
     }
 
-    const pool = new Pool({ connectionString });
+    const pool = new Pool({
+      connectionString,
+      // Connection pool settings
+      max: 5, // Max connections in pool
+      idleTimeoutMillis: 30000, // Close idle connections after 30s
+      connectionTimeoutMillis: 10000, // Wait max 10s for a connection
+    });
+
     const adapter = new PrismaPg(pool);
 
-    super({ adapter });
+    super({ 
+      adapter,
+      // Prisma client options
+      log: process.env.NODE_ENV === 'development' 
+        ? ['query', 'error', 'warn']
+        : ['error'],
+    });
 
     this.logger.log('✅ Prisma Client initialized with PG adapter');
   }
