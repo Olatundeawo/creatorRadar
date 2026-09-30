@@ -168,13 +168,13 @@ export class ScraperService {
     }
   }
 
-  /**
+    /**
    * Get channel details in batches
    */
   private async getChannelDetailsInBatches(channelIds: string[]): Promise<any[]> {
     if (channelIds.length === 0) return [];
 
-    const allChannels = [];
+    const allChannels: any[] = []; // Explicitly type as any[]
 
     // Process in batches of 50
     for (let i = 0; i < channelIds.length; i += 50) {
