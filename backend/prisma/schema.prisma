@@ -1,20 +1,49 @@
-// This is your datasource config
 datasource db {
   provider = "postgresql"
 }
 
-// This generates the Prisma Client
 generator client {
   provider = "prisma-client-js"
 }
 
-// Channel model for storing YouTube channel data
+// User model (linked to Supabase Auth)
+model User {
+  id            String   @id  // Supabase user ID
+  email         String   @unique
+  name          String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  // Relations
+  searches      SavedSearch[]
+  channels      UserChannel[]
+
+  @@index([email])
+}
+
+// Saved searches per user
+model SavedSearch {
+  id        String   @id @default(cuid())
+  userId    String
+  query     String
+  niche     String?
+  resultCount Int
+  createdAt DateTime @default(now())
+
+  // Relations
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([createdAt])
+}
+
+// Channel model (unchanged, but can add userId later for favorites)
 model Channel {
   id            String   @id @default(cuid())
   youtubeId     String   @unique
   name          String
   description   String?  @db.Text
-  subscribers   String   // YouTube returns as string "1000000"
+  subscribers   String
   videoCount    String
   email         String?
   latestUpload  DateTime?
@@ -23,14 +52,30 @@ model Channel {
   scrapedAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
-  // Indexes for faster queries
+  // Relations
+  userChannels  UserChannel[]
+
   @@index([youtubeId])
   @@index([name])
-  @@index([subscribers])
-  @@index([scrapedAt])
 }
 
-// Track search queries made
+// User's favorite channels
+model UserChannel {
+  id        String   @id @default(cuid())
+  userId    String
+  channelId String
+  isFavorite Boolean @default(false)
+  createdAt DateTime @default(now())
+
+  // Relations
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  channel   Channel  @relation(fields: [channelId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, channelId])
+  @@index([userId])
+}
+
+// Search history (keep for reference)
 model SearchQuery {
   id          String   @id @default(cuid())
   query       String
@@ -39,14 +84,13 @@ model SearchQuery {
   createdAt   DateTime @default(now())
 
   @@index([query])
-  @@index([createdAt])
 }
 
-// Store export history
+// Export history
 model ExportHistory {
   id        String   @id @default(cuid())
-  format    String   // "csv" or "xlsx"
-  count     Int      // number of channels exported
+  format    String
+  count     Int
   createdAt DateTime @default(now())
 
   @@index([createdAt])
