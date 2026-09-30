@@ -1,187 +1,255 @@
-import { Injectable, Logger } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
+import { Injectable, Logger, BadRequestException } from '@nestjs/common';
 import { google } from 'googleapis';
-import { YoutubeChannelDto } from './dto/youtube-channel.dto';
 
 @Injectable()
 export class ScraperService {
   private readonly logger = new Logger(ScraperService.name);
-  private youtube;
+  private youtube: any;
+  private searchCache = new Map<string, { data: any; timestamp: number }>();
+  private cacheExpiry = 3600000; // 1 hour
 
-  constructor(private configService: ConfigService) {
-    const apiKey = this.configService.get<string>('YOUTUBE_API_KEY');
+  // Quota tracking
+  private quotaUsed = 0;
+  private quotaLimit = 10000;
+  private quotaResetTime = this.getNextMidnightPT();
 
-    if (!apiKey) {
-      throw new Error('YOUTUBE_API_KEY is not set in environment variables');
-    }
-
+  constructor() {
     this.youtube = google.youtube({
       version: 'v3',
-      auth: apiKey,
+      auth: process.env.YOUTUBE_API_KEY,
     });
 
-    this.logger.log('✅ YouTube API initialized');
+    // Reset quota every 24 hours
+    this.startQuotaResetTimer();
   }
 
   /**
-   * Search for YouTube channels by query
+   * Get quota info
    */
-  async searchChannels(query: string, maxResults: number = 50): Promise<YoutubeChannelDto[]> {
-    try {
-      this.logger.log(`🔍 Searching YouTube for: "${query}"`);
+  getQuotaInfo() {
+    const now = Date.now();
+    const resetTime = this.quotaResetTime;
+    const timeUntilReset = Math.max(0, resetTime - now);
+    const hoursUntilReset = Math.floor(timeUntilReset / (1000 * 60 * 60));
+    const minutesUntilReset = Math.floor((timeUntilReset % (1000 * 60 * 60)) / (1000 * 60));
 
-      const response = await this.youtube.search.list({
-        part: 'snippet',
-        q: query,
-        type: 'channel',
-        maxResults: Math.min(maxResults, 50),
-        order: 'relevance',
-        fields: 'items(id,snippet)',
-      });
+    return {
+      used: this.quotaUsed,
+      limit: this.quotaLimit,
+      remaining: this.quotaLimit - this.quotaUsed,
+      percentage: Math.round((this.quotaUsed / this.quotaLimit) * 100),
+      resetTime: new Date(this.quotaResetTime).toISOString(),
+      timeUntilReset: `${hoursUntilReset}h ${minutesUntilReset}m`,
+      status: this.getQuotaStatus(),
+    };
+  }
 
-      if (!response.data.items || response.data.items.length === 0) {
-        this.logger.warn(`No channels found for: "${query}"`);
-        return [];
+  /**
+   * Get quota status
+   */
+  private getQuotaStatus(): 'ok' | 'warning' | 'critical' | 'exceeded' {
+    const percentage = (this.quotaUsed / this.quotaLimit) * 100;
+
+    if (percentage >= 100) return 'exceeded';
+    if (percentage >= 80) return 'critical';
+    if (percentage >= 50) return 'warning';
+    return 'ok';
+  }
+
+  /**
+   * Calculate next midnight PT
+   */
+  private getNextMidnightPT(): number {
+    const now = new Date();
+    const ptTime = new Date(now.toLocaleString('en-US', { timeZone: 'America/Los_Angeles' }));
+    
+    const nextMidnight = new Date(ptTime);
+    nextMidnight.setDate(nextMidnight.getDate() + 1);
+    nextMidnight.setHours(0, 0, 0, 0);
+
+    return nextMidnight.getTime();
+  }
+
+  /**
+   * Start quota reset timer
+   */
+  private startQuotaResetTimer() {
+    setInterval(() => {
+      const now = Date.now();
+      if (now >= this.quotaResetTime) {
+        this.quotaUsed = 0;
+        this.quotaResetTime = this.getNextMidnightPT();
+        this.logger.log('✅ Daily quota reset!');
       }
+    }, 60000); // Check every minute
+  }
 
-      const channelIds = response.data.items
-        .map((item: any) => item.id.channelId)
-        .filter((id: string) => id);
+  /**
+   * Track quota usage
+   */
+  private addQuotaUsage(credits: number) {
+    this.quotaUsed += credits;
+    this.logger.warn(
+      `📊 Quota: ${this.quotaUsed}/${this.quotaLimit} (${Math.round(
+        (this.quotaUsed / this.quotaLimit) * 100,
+      )}%)`,
+    );
+  }
 
-      this.logger.log(`Found ${channelIds.length} channels, fetching details...`);
-
-      const channels = await this.getChannelDetails(channelIds);
-      return channels;
-    } catch (error) {
-      this.logger.error(`Search failed: ${error.message}`, error);
-      throw new Error(`YouTube search failed: ${error.message}`);
+  /**
+   * Check if quota available
+   */
+  private checkQuota(estimatedCost: number): void {
+    if (this.quotaUsed + estimatedCost > this.quotaLimit) {
+      const quota = this.getQuotaInfo();
+      throw new BadRequestException(
+        `YouTube API quota exceeded. Resets in ${quota.timeUntilReset}. Try again later.`,
+      );
     }
   }
 
   /**
-   * Get detailed info for channels (subscribers, video count, etc.)
+   * Search with caching and quota tracking
    */
-  private async getChannelDetails(channelIds: string[]): Promise<YoutubeChannelDto[]> {
+  async searchAndEnrich(
+    query: string,
+    niche?: string,
+    maxResults: number = 10,
+  ) {
+    const cacheKey = `${query}-${niche}-${maxResults}`;
+
+    // Check cache first
+    const cached = this.searchCache.get(cacheKey);
+    if (cached && Date.now() - cached.timestamp < this.cacheExpiry) {
+      this.logger.log(`📦 Cache hit: ${query}`);
+      return cached.data;
+    }
+
+    // Estimate cost: 100 for search + 1 per channel + 1 per latest upload
+    const estimatedCost = 100 + maxResults * 2;
+    this.checkQuota(estimatedCost);
+
+    this.logger.log(
+      `🔍 Searching: ${query} (niche: ${niche || 'general'}, estimated cost: ${estimatedCost})`,
+    );
+
     try {
-      const response = await this.youtube.channels.list({
-        part: 'snippet,statistics',
-        id: channelIds.join(','),
-        fields: 'items(id,snippet,statistics)',
+      // Search videos
+      const { data: searchResults } = await this.youtube.search.list({
+        part: ['snippet'],
+        q: query,
+        type: ['video'],
+        maxResults: Math.min(maxResults, 50),
       });
 
-      const channels: YoutubeChannelDto[] = response.data.items.map((item: any) => ({
-        youtubeId: item.id,
-        name: item.snippet.title,
-        description: item.snippet.description,
-        subscribers: item.statistics.subscriberCount || '0',
-        videoCount: item.statistics.videoCount || '0',
-        thumbnailUrl: item.snippet.thumbnails?.high?.url,
-        channelUrl: `https://www.youtube.com/channel/${item.id}`,
-      }));
+      this.addQuotaUsage(100);
 
+      // Extract unique channel IDs
+      const channelIds = new Set<string>();
+      searchResults.items.forEach((item: any) => {
+        if (item.snippet?.channelId) {
+          channelIds.add(item.snippet.channelId);
+        }
+      });
+
+      // Batch get channel details
+      const channels = await this.getChannelDetailsInBatches(
+        Array.from(channelIds),
+      );
+
+      // Cache results
+      this.searchCache.set(cacheKey, { data: channels, timestamp: Date.now() });
+
+      this.logger.log(`✅ Found ${channels.length} unique channels`);
       return channels;
     } catch (error) {
-      this.logger.error(`Failed to get channel details: ${error.message}`);
+      this.logger.error(`Search failed: ${error.message}`);
       throw error;
     }
   }
 
   /**
-   * Get latest upload time for a channel
+   * Get channel details in batches
    */
-  async getLatestUploadTime(channelId: string): Promise<Date | null> {
-    try {
-      const activities = await this.youtube.activities.list({
-        part: 'snippet,contentDetails',
-        channelId,
-        maxResults: 1,
-        fields: 'items(contentDetails)',
-      });
+  private async getChannelDetailsInBatches(channelIds: string[]): Promise<any[]> {
+    if (channelIds.length === 0) return [];
 
-      const videoId = activities.data.items?.[0]?.contentDetails?.upload?.videoId;
+    const allChannels = [];
 
-      if (!videoId) {
-        this.logger.warn(`No recent uploads found for channel: ${channelId}`);
-        return null;
+    // Process in batches of 50
+    for (let i = 0; i < channelIds.length; i += 50) {
+      const batch = channelIds.slice(i, i + 50);
+
+      try {
+        const { data } = await this.youtube.channels.list({
+          part: ['snippet', 'statistics'],
+          id: batch,
+        });
+
+        this.addQuotaUsage(1); // 1 credit per batch
+
+        const enrichedChannels = await Promise.all(
+          data.items.map((channel: any) => this.enrichChannelData(channel)),
+        );
+
+        allChannels.push(...enrichedChannels);
+      } catch (error) {
+        this.logger.warn(`Failed to get channel details: ${error.message}`);
       }
-
-      const video = await this.youtube.videos.list({
-        part: 'snippet',
-        id: videoId,
-        fields: 'items(snippet(publishedAt))',
-      });
-
-      const publishedAt = video.data.items?.[0]?.snippet?.publishedAt;
-      return publishedAt ? new Date(publishedAt) : null;
-    } catch (error) {
-      this.logger.warn(`Failed to get latest upload for ${channelId}: ${error.message}`);
-      return null;
     }
+
+    return allChannels;
   }
 
   /**
-   * Enrich channel data with latest upload
-   * EMAIL SCRAPING DISABLED - Will be implemented later
+   * Enrich with latest upload
    */
-  async enrichChannelData(channel: YoutubeChannelDto): Promise<YoutubeChannelDto> {
+  private async enrichChannelData(channel: any) {
     try {
-      this.logger.log(`⏳ Enriching channel: ${channel.name}`);
+      const { data: activities } = await this.youtube.activities.list({
+        part: ['snippet'],
+        channelId: channel.id,
+        maxResults: 1,
+      });
 
-      // Get latest upload time
-      const latestUpload = await this.getLatestUploadTime(channel.youtubeId);
+      this.addQuotaUsage(1); // 1 credit per channel
 
-      // Return enriched channel WITHOUT email
       return {
-        ...channel,
-        latestUpload,
-        email: undefined,
+        youtubeId: channel.id,
+        name: channel.snippet?.title,
+        description: channel.snippet?.description,
+        subscribers: channel.statistics?.subscriberCount || '0',
+        videoCount: channel.statistics?.videoCount || '0',
+        thumbnailUrl: channel.snippet?.thumbnails?.medium?.url,
+        channelUrl: `https://youtube.com/channel/${channel.id}`,
+        latestUpload: activities.items?.[0]?.snippet?.publishedAt,
+        email: null,
       };
     } catch (error) {
-      this.logger.error(`Failed to enrich channel ${channel.youtubeId}: ${error.message}`);
-      return channel;
+      this.logger.warn(`Failed to enrich channel ${channel.id}`);
+      return {
+        youtubeId: channel.id,
+        name: channel.snippet?.title,
+        description: channel.snippet?.description,
+        subscribers: channel.statistics?.subscriberCount || '0',
+        videoCount: channel.statistics?.videoCount || '0',
+        thumbnailUrl: channel.snippet?.thumbnails?.medium?.url,
+        channelUrl: `https://youtube.com/channel/${channel.id}`,
+        latestUpload: null,
+        email: null,
+      };
     }
   }
 
   /**
-   * Search and enrich multiple channels (sequential)
+   * Clear old cache entries
    */
-  async searchAndEnrich(query: string, maxResults: number = 50): Promise<YoutubeChannelDto[]> {
-    try {
-      // Step 1: Search for channels
-      const channels = await this.searchChannels(query, maxResults);
-
-      if (channels.length === 0) {
-        return [];
+  clearOldCache() {
+    const now = Date.now();
+    for (const [key, value] of this.searchCache.entries()) {
+      if (now - value.timestamp > this.cacheExpiry) {
+        this.searchCache.delete(key);
       }
-
-      this.logger.log(`📊 Enriching ${channels.length} channels with latest uploads...`);
-
-      // Step 2: Enrich each channel sequentially
-      const enrichedChannels: YoutubeChannelDto[] = [];
-      for (const channel of channels) {
-        try {
-          const enriched = await this.enrichChannelData(channel);
-          enrichedChannels.push(enriched);
-          // Small delay between requests
-          await this.delay(500);
-        } catch (error) {
-          this.logger.error(`Failed to enrich channel ${channel.youtubeId}: ${error.message}`);
-          enrichedChannels.push(channel);
-        }
-      }
-
-      this.logger.log(`✅ Enriched all channels successfully`);
-      return enrichedChannels;
-    } catch (error) {
-      this.logger.error(`Search and enrich failed: ${error.message}`);
-      throw error;
     }
-  }
-
-  /**
-   * Helper: delay function
-   */
-  private delay(ms: number): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, ms));
   }
 }

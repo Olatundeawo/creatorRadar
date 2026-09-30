@@ -5,40 +5,70 @@ import {
   Delete,
   Body,
   Query,
-  Param,
+  Headers,
   BadRequestException,
-  HttpStatus,
-  HttpCode,
   Logger,
+  Param,
 } from '@nestjs/common';
 import { ChannelsService } from './channels.service';
-import { SearchChannelsDto } from './dto/search-channels.dto';
+import { AuthService } from '../auth/auth.service';
+import { ScraperService } from '../scraper/scraper.service';
 
 @Controller('api/channels')
 export class ChannelsController {
   private readonly logger = new Logger(ChannelsController.name);
 
-  constructor(private channelsService: ChannelsService) {}
+  constructor(
+    private channelsService: ChannelsService,
+    private authService: AuthService,
+    private scraperService: ScraperService,
+  ) {}
 
   /**
    * POST /api/channels/search
-   * Search YouTube for channels and save to database
    */
   @Post('search')
-  @HttpCode(HttpStatus.OK)
-  async search(@Body() dto: SearchChannelsDto) {
+  async search(
+    @Headers('authorization') authHeader: string,
+    @Body() dto: { query: string; niche?: string; maxResults?: number },
+  ) {
     try {
-      if (!dto.query || !dto.query.trim()) {
-        throw new BadRequestException('Search query is required');
+      const token = authHeader?.replace('Bearer ', '');
+      if (!token) {
+        throw new BadRequestException('Authorization required');
       }
 
-      this.logger.log(`Search request for: ${dto.query}`);
-      const results = await this.channelsService.search(dto);
+      const supabaseUser = await this.authService.getUserFromToken(token);
+      if (!supabaseUser) {
+        throw new BadRequestException('Invalid token');
+      }
+
+      const { query, niche, maxResults = 10 } = dto;
+
+      // Search YouTube
+      const channels = await this.channelsService.search(
+        query,
+        niche,
+        maxResults,
+      );
+
+      // Save channels for this user
+      await this.channelsService.saveChannelsForUser(
+        supabaseUser.id,
+        channels,
+        query,
+        niche,
+        channels.length,
+      );
+
+      // Get quota info
+      const quota = this.scraperService.getQuotaInfo();
 
       return {
         success: true,
-        message: `Found ${results.length} channels`,
-        data: results,
+        data: channels,
+        count: channels.length,
+        quota,
         timestamp: new Date(),
       };
     } catch (error) {
@@ -48,68 +78,146 @@ export class ChannelsController {
   }
 
   /**
-   * GET /api/channels
-   * Get all saved channels with pagination
+   * GET /api/channels/quota
    */
-  @Get()
-  async getChannels(
-    @Query('page') page: string = '1',
-    @Query('limit') limit: string = '20',
-    @Query('sort') sort: string = 'scrapedAt',
-    @Query('order') order: 'asc' | 'desc' = 'desc',
-  ) {
+  @Get('quota')
+  async getQuota(@Headers('authorization') authHeader: string) {
     try {
-      const pageNum = parseInt(page);
-      const limitNum = parseInt(limit);
-
-      if (isNaN(pageNum) || isNaN(limitNum)) {
-        throw new BadRequestException('Page and limit must be numbers');
+      const token = authHeader?.replace('Bearer ', '');
+      if (!token) {
+        throw new BadRequestException('Authorization required');
       }
 
-      const result = await this.channelsService.getChannels({
-        page: pageNum,
-        limit: limitNum,
-        sort,
-        order,
-      });
+      const supabaseUser = await this.authService.getUserFromToken(token);
+      if (!supabaseUser) {
+        throw new BadRequestException('Invalid token');
+      }
+
+      const quota = this.scraperService.getQuotaInfo();
 
       return {
         success: true,
-        message: `Retrieved ${result.data.length} channels`,
-        ...result,
+        data: quota,
         timestamp: new Date(),
       };
     } catch (error) {
-      this.logger.error(`Failed to get channels: ${error.message}`);
+      this.logger.error(`Get quota failed: ${error.message}`);
       throw error;
     }
   }
 
   /**
+   * GET /api/channels
+   * Get user's channels (paginated)
+   */
+    @Get()
+  async getChannels(
+    @Headers('authorization') authHeader: string,
+    @Query('page') page = '1',
+    @Query('limit') limit = '20',
+    @Query('sort') sort = 'scrapedAt',
+    @Query('order') order = 'desc',
+  ) {
+    try {
+      // Get user from token
+      const token = authHeader?.replace('Bearer ', '');
+      if (!token) {
+        throw new BadRequestException('Authorization required');
+      }
+
+      const supabaseUser = await this.authService.getUserFromToken(token);
+      if (!supabaseUser) {
+        throw new BadRequestException('Invalid token');
+      }
+
+      const pageNum = Math.max(1, parseInt(page, 10) || 1);
+      const limitNum = Math.min(50, Math.max(1, parseInt(limit, 10) || 20));
+      const orderBy = (order === 'asc' ? 'asc' : 'desc') as 'asc' | 'desc';
+
+      const { channels, total } = await this.channelsService.getUserChannels(
+        supabaseUser.id,
+        pageNum,
+        limitNum,
+        sort,
+        orderBy,
+      );
+
+      return {
+        success: true,
+        data: channels,
+        pagination: {
+          total,
+          page: pageNum,
+          limit: limitNum,
+          pages: Math.ceil(total / limitNum),
+        },
+        timestamp: new Date(),
+      };
+    } catch (error) {
+      this.logger.error(`Get channels failed: ${error.message}`);
+      throw error;
+    }
+  }
+  
+  /**
    * GET /api/channels/count
-   * Get total number of channels
+   * Get user's total channel count
    */
   @Get('count')
-  async getCount() {
-    const total = await this.channelsService.getTotalCount();
-    return {
-      success: true,
-      total,
-      timestamp: new Date(),
-    };
+  async getCount(@Headers('authorization') authHeader: string) {
+    try {
+      const token = authHeader?.replace('Bearer ', '');
+      if (!token) {
+        throw new BadRequestException('Authorization required');
+      }
+
+      const supabaseUser = await this.authService.getUserFromToken(token);
+      if (!supabaseUser) {
+        throw new BadRequestException('Invalid token');
+      }
+
+      const count = await this.channelsService.getUserChannelCount(
+        supabaseUser.id,
+      );
+
+      return {
+        success: true,
+        count,
+        timestamp: new Date(),
+      };
+    } catch (error) {
+      this.logger.error(`Get count failed: ${error.message}`);
+      throw error;
+    }
   }
 
   /**
    * GET /api/channels/:youtubeId
-   * Get a specific channel by YouTube ID
+   * Get single channel
    */
   @Get(':youtubeId')
-  async getChannel(@Param('youtubeId') youtubeId: string) {
+  async getChannel(
+    @Headers('authorization') authHeader: string,
+    @Param('youtubeId') youtubeId: string,
+  ) {
     try {
-      const channel = await this.channelsService.getChannelByYoutubeId(youtubeId);
+      const token = authHeader?.replace('Bearer ', '');
+      if (!token) {
+        throw new BadRequestException('Authorization required');
+      }
+
+      const supabaseUser = await this.authService.getUserFromToken(token);
+      if (!supabaseUser) {
+        throw new BadRequestException('Invalid token');
+      }
+
+      const channel = await this.channelsService.getUserChannel(
+        supabaseUser.id,
+        youtubeId,
+      );
 
       if (!channel) {
-        throw new BadRequestException(`Channel with ID ${youtubeId} not found`);
+        throw new BadRequestException('Channel not found');
       }
 
       return {
@@ -118,28 +226,40 @@ export class ChannelsController {
         timestamp: new Date(),
       };
     } catch (error) {
-      this.logger.error(`Failed to get channel: ${error.message}`);
+      this.logger.error(`Get channel failed: ${error.message}`);
       throw error;
     }
   }
 
   /**
    * DELETE /api/channels/:id
-   * Delete a channel
+   * Delete channel from user's list
    */
   @Delete(':id')
-  async deleteChannel(@Param('id') id: string) {
+  async deleteChannel(
+    @Headers('authorization') authHeader: string,
+    @Param('id') channelId: string,
+  ) {
     try {
-      const deleted = await this.channelsService.deleteChannel(id);
+      const token = authHeader?.replace('Bearer ', '');
+      if (!token) {
+        throw new BadRequestException('Authorization required');
+      }
+
+      const supabaseUser = await this.authService.getUserFromToken(token);
+      if (!supabaseUser) {
+        throw new BadRequestException('Invalid token');
+      }
+
+      await this.channelsService.deleteUserChannel(supabaseUser.id, channelId);
 
       return {
         success: true,
-        message: 'Channel deleted successfully',
-        data: deleted,
+        message: 'Channel deleted',
         timestamp: new Date(),
       };
     } catch (error) {
-      this.logger.error(`Failed to delete channel: ${error.message}`);
+      this.logger.error(`Delete channel failed: ${error.message}`);
       throw error;
     }
   }

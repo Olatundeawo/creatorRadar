@@ -4,6 +4,7 @@ import { PrismaModule } from './prisma/prisma.module';
 import { ChannelsModule } from './modules/channels/channels.module';
 import { ScraperModule } from './modules/scraper/scraper.module';
 import { ExportModule } from './modules/export/export.module';
+import { AuthModule } from './modules/auth/auth.module';
 
 @Module({
   imports: [
@@ -18,6 +19,7 @@ import { ExportModule } from './modules/export/export.module';
     ChannelsModule,
     ScraperModule,
     ExportModule,
+    AuthModule,
   ],
 })
 export class AppModule {}

@@ -1,4 +1,4 @@
-export class ChannelResponseDto {
+export interface ChannelResponseDto {
   id: string;
   youtubeId: string;
   name: string;

@@ -1,9 +1,7 @@
-import { Injectable, Logger } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
+import { Injectable, Logger, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { ScraperService } from '../scraper/scraper.service';
-import { SearchChannelsDto } from './dto/search-channels.dto';
-import { ChannelResponseDto } from './dto/channel.response';
+import type { YoutubeChannelDto } from '../scraper/dto/youtube-channel.dto';
 
 @Injectable()
 export class ChannelsService {
@@ -12,171 +10,253 @@ export class ChannelsService {
   constructor(
     private prisma: PrismaService,
     private scraperService: ScraperService,
-    private configService: ConfigService,
   ) {}
 
   /**
-   * Search YouTube for channels and save them to database
+   * Search YouTube channels
    */
-  async search(dto: SearchChannelsDto): Promise<ChannelResponseDto[]> {
+  async search(
+    query: string,
+    niche?: string,
+    maxResults: number = 10,
+  ): Promise<YoutubeChannelDto[]> {
     try {
-      this.logger.log(`🔍 Searching and scraping YouTube for: ${dto.query}`);
-
-      // Step 1: Search YouTube and enrich data
-      const enrichedChannels = await this.scraperService.searchAndEnrich(
-        dto.query,
-        dto.maxResults || 50,
+      this.logger.log(
+        `🔍 Searching YouTube: ${query} (niche: ${niche || 'general'})`,
       );
 
-      if (enrichedChannels.length === 0) {
-        this.logger.log(`No channels found for: ${dto.query}`);
-      }
+      const channels = await this.scraperService.searchAndEnrich(
+        query,
+        niche,
+        maxResults,
+      );
 
-      // Step 2: Save to database
-      const savedChannels = await this.saveChannels(enrichedChannels);
+      this.logger.log(` Found ${channels.length} channels`);
+      return channels;
+    } catch (error) {
+      this.logger.error(`Search failed: ${error.message}`);
+      throw error;
+    }
+  }
 
-      // Step 3: Log search query
-      await this.prisma.searchQuery.create({
+  /**
+   * Save channels and link to user
+   */
+  async saveChannelsForUser(
+    userId: string,
+    channels: YoutubeChannelDto[],
+    query: string,
+    niche?: string,
+    resultCount?: number,
+  ) {
+    try {
+      // Save search record
+      await this.prisma.savedSearch.create({
         data: {
-          query: dto.query,
-          niche: dto.niche || 'general',
-          resultCount: savedChannels.length,
+          userId,
+          query,
+          niche: niche || 'general',
+          resultCount: resultCount || channels.length,
         },
       });
 
-      this.logger.log(`✅ Saved ${savedChannels.length} channels to database`);
-      return savedChannels;
-    } catch (error) {
-      this.logger.error(`Search failed: ${error.message}`, error);
-      throw error;
-    }
-  }
-
-  /**
-   * Get all channels from database with pagination
-   */
-  async getChannels(options: {
-    page?: number;
-    limit?: number;
-    sort?: string;
-    order?: 'asc' | 'desc';
-  }): Promise<{
-    data: ChannelResponseDto[];
-    pagination: {
-      page: number;
-      limit: number;
-      total: number;
-      pages: number;
-    };
-  }> {
-    try {
-      const page = options.page || 1;
-      const limit = options.limit || 20;
-      const sort = options.sort || 'scrapedAt';
-      const order = options.order || 'desc';
-
-      if (page < 1 || limit < 1) {
-        throw new Error('Page and limit must be greater than 0');
-      }
-
-      const skip = (page - 1) * limit;
-
-      const [channels, total] = await Promise.all([
-        this.prisma.channel.findMany({
-          skip,
-          take: limit,
-          orderBy: {
-            [sort]: order,
-          },
-        }),
-        this.prisma.channel.count(),
-      ]);
-
-      return {
-        data: channels,
-        pagination: {
-          page,
-          limit,
-          total,
-          pages: Math.ceil(total / limit),
-        },
-      };
-    } catch (error) {
-      this.logger.error(`Failed to get channels: ${error.message}`, error);
-      throw error;
-    }
-  }
-
-  /**
-   * Get a single channel by YouTube ID
-   */
-  async getChannelByYoutubeId(youtubeId: string): Promise<ChannelResponseDto | null> {
-    return this.prisma.channel.findUnique({
-      where: { youtubeId },
-    });
-  }
-
-  /**
-   * Save channels to database (upsert)
-   */
-  async saveChannels(channels: any[]): Promise<ChannelResponseDto[]> {
-    try {
-      const saved = await Promise.all(
-        channels.map(ch =>
-          this.prisma.channel.upsert({
-            where: { youtubeId: ch.youtubeId },
+      // Upsert channels and link to user
+      for (const channel of channels) {
+        try {
+          // Save/update channel in global table
+          const savedChannel = await this.prisma.channel.upsert({
+            where: { youtubeId: channel.youtubeId },
             update: {
-              name: ch.name,
-              description: ch.description,
-              subscribers: ch.subscribers,
-              videoCount: ch.videoCount,
-              email: ch.email || null,
-              latestUpload: ch.latestUpload,
-              thumbnailUrl: ch.thumbnailUrl,
-              channelUrl: ch.channelUrl,
+              subscribers: channel.subscribers,
+              videoCount: channel.videoCount,
+              latestUpload: channel.latestUpload,
+              updatedAt: new Date(),
             },
             create: {
-              youtubeId: ch.youtubeId,
-              name: ch.name,
-              description: ch.description || null,
-              subscribers: ch.subscribers,
-              videoCount: ch.videoCount,
-              email: ch.email || null,
-              latestUpload: ch.latestUpload,
-              thumbnailUrl: ch.thumbnailUrl,
-              channelUrl: ch.channelUrl,
+              youtubeId: channel.youtubeId,
+              name: channel.name,
+              description: channel.description,
+              subscribers: channel.subscribers,
+              videoCount: channel.videoCount,
+              email: channel.email || null,
+              latestUpload: channel.latestUpload,
+              thumbnailUrl: channel.thumbnailUrl,
+              channelUrl: channel.channelUrl,
             },
-          }),
-        ),
-      );
+          });
 
-      this.logger.log(`✅ Saved ${saved.length} channels to database`);
-      return saved;
+          // Link channel to user (avoid duplicates)
+          await this.prisma.userChannel.upsert({
+            where: {
+              userId_channelId: {
+                userId,
+                channelId: savedChannel.id,
+              },
+            },
+            update: {},
+            create: {
+              userId,
+              channelId: savedChannel.id,
+              isFavorite: false,
+            },
+          });
+        } catch (error) {
+          this.logger.warn(
+            `Failed to save channel ${channel.youtubeId}: ${error.message}`,
+          );
+        }
+      }
+
+      this.logger.log(
+        `Saved ${channels.length} channels for user ${userId}`,
+      );
     } catch (error) {
-      this.logger.error(`Failed to save channels: ${error.message}`, error);
+      this.logger.error(`Failed to save channels: ${error.message}`);
       throw error;
     }
   }
 
   /**
-   * Delete a channel
+   * Get user's channels (paginated)
    */
-  async deleteChannel(id: string): Promise<ChannelResponseDto> {
-    return this.prisma.channel.delete({
-      where: { id },
-    });
+  async getUserChannels(
+    userId: string,
+    page: number = 1,
+    limit: number = 20,
+    sort: string = 'scrapedAt',
+    order: 'asc' | 'desc' = 'desc',
+  ) {
+    try {
+      const skip = (page - 1) * limit;
+
+      // Get user's channel IDs
+      const userChannels = await this.prisma.userChannel.findMany({
+        where: { userId },
+        select: { channelId: true },
+      });
+
+      const channelIds = userChannels.map((uc) => uc.channelId);
+
+      if (channelIds.length === 0) {
+        return { channels: [], total: 0 };
+      }
+
+      // Get channels with pagination
+      const channels = await this.prisma.channel.findMany({
+        where: { id: { in: channelIds } },
+        orderBy: { [sort]: order },
+        skip,
+        take: limit,
+      });
+
+      const total = await this.prisma.channel.count({
+        where: { id: { in: channelIds } },
+      });
+
+      return { channels, total };
+    } catch (error) {
+      this.logger.error(`Failed to get user channels: ${error.message}`);
+      throw error;
+    }
   }
 
   /**
-   * Get total channel count
+   * Get user's channel count
    */
-  async getTotalCount(): Promise<number> {
-    return this.prisma.channel.count();
+  async getUserChannelCount(userId: string): Promise<number> {
+    try {
+      return await this.prisma.userChannel.count({
+        where: { userId },
+      });
+    } catch (error) {
+      this.logger.error(`Failed to get user channel count: ${error.message}`);
+      throw error;
+    }
   }
 
-  async getAllChannels(): Promise<ChannelResponseDto[]> {
-  return this.prisma.channel.findMany({
-    orderBy: { scrapedAt: 'desc' },
-  });
-}
+  /**
+   * Get single user channel
+   */
+  async getUserChannel(userId: string, youtubeId: string) {
+    try {
+      const channel = await this.prisma.channel.findUnique({
+        where: { youtubeId },
+      });
+
+      if (!channel) return null;
+
+      // Check if user has access to this channel
+      const userChannel = await this.prisma.userChannel.findUnique({
+        where: {
+          userId_channelId: {
+            userId,
+            channelId: channel.id,
+          },
+        },
+      });
+
+      return userChannel ? channel : null;
+    } catch (error) {
+      this.logger.error(`Failed to get user channel: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Delete channel from user's list
+   */
+  async deleteUserChannel(userId: string, channelId: string): Promise<void> {
+    try {
+      // Check if user owns this channel
+      const userChannel = await this.prisma.userChannel.findUnique({
+        where: {
+          userId_channelId: {
+            userId,
+            channelId,
+          },
+        },
+      });
+
+      if (!userChannel) {
+        throw new BadRequestException('Channel not found or unauthorized');
+      }
+
+      // Delete only the user's link to the channel
+      await this.prisma.userChannel.delete({
+        where: {
+          userId_channelId: {
+            userId,
+            channelId,
+          },
+        },
+      });
+
+      this.logger.log(`Deleted channel for user ${userId}`);
+    } catch (error) {
+      this.logger.error(`Failed to delete channel: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Get all channels (for admin - optional)
+   */
+  async getAllChannels(page: number = 1, limit: number = 20) {
+    try {
+      const skip = (page - 1) * limit;
+
+      const channels = await this.prisma.channel.findMany({
+        skip,
+        take: limit,
+        orderBy: { scrapedAt: 'desc' },
+      });
+
+      const total = await this.prisma.channel.count();
+
+      return { channels, total };
+    } catch (error) {
+      this.logger.error(`Failed to get all channels: ${error.message}`);
+      throw error;
+    }
+  }
 }

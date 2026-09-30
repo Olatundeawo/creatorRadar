@@ -1,7 +1,16 @@
-import { Controller, Get, Query, Res, Logger, BadRequestException } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Query,
+  Headers,
+  BadRequestException,
+  Logger,
+  Res,
+} from '@nestjs/common';
 import type { Response } from 'express';
 import { ExportService } from './export.service';
 import { ChannelsService } from '../channels/channels.service';
+import { AuthService } from '../auth/auth.service';
 
 @Controller('api/export')
 export class ExportController {
@@ -10,57 +19,58 @@ export class ExportController {
   constructor(
     private exportService: ExportService,
     private channelsService: ChannelsService,
+    private authService: AuthService,
   ) {}
 
   /**
-   * GET /api/export/channels
-   * Export all channels to CSV or XLSX
+   * GET /api/export/channels?format=csv|xlsx
    */
   @Get('channels')
   async exportChannels(
-    @Query('format') format: 'csv' | 'xlsx' = 'xlsx',
+    @Headers('authorization') authHeader: string,
+    @Query('format') format: string = 'csv',
     @Res() res: Response,
   ) {
     try {
-      this.logger.log(`Export request - Format: ${format}`);
+      const token = authHeader?.replace('Bearer ', '');
+      if (!token) {
+        throw new BadRequestException('Authorization required');
+      }
 
-      // Get all channels from database
-      const channels = await this.channelsService.getAllChannels();
+      const supabaseUser = await this.authService.getUserFromToken(token);
+      if (!supabaseUser) {
+        throw new BadRequestException('Invalid token');
+      }
+
+      // Get user's channels
+      const { channels } = await this.channelsService.getUserChannels(
+        supabaseUser.id,
+        1,
+        1000,
+      );
 
       if (channels.length === 0) {
-        throw new BadRequestException('No channels found to export');
+        return res.status(400).json({ error: 'No channels to export' });
       }
 
-      this.logger.log(`Exporting ${channels.length} channels as ${format.toUpperCase()}`);
+      this.logger.log(
+        `Exporting ${channels.length} channels as ${format.toUpperCase()}`,
+      );
 
-      if (format === 'csv') {
-        // Export as CSV
-        const csv = this.exportService.toCSV(channels);
-
-        res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-        res.setHeader(
-          'Content-Disposition',
-          `attachment; filename="channels_${new Date().toISOString().split('T')[0]}.csv"`,
-        );
-        return res.send(csv);
-      }
-
-      if (format === 'xlsx') {
-        // Export as XLSX
+      if (format.toLowerCase() === 'xlsx') {
         const buffer = await this.exportService.toXLSX(channels);
-
         res.setHeader(
           'Content-Type',
           'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         );
-        res.setHeader(
-          'Content-Disposition',
-          `attachment; filename="channels_${new Date().toISOString().split('T')[0]}.xlsx"`,
-        );
+        res.setHeader('Content-Disposition', 'attachment; filename="channels.xlsx"');
         return res.send(buffer);
+      } else {
+        const csv = this.exportService.toCSV(channels);
+        res.setHeader('Content-Type', 'text/csv');
+        res.setHeader('Content-Disposition', 'attachment; filename="channels.csv"');
+        return res.send(csv);
       }
-
-      throw new BadRequestException('Format must be "csv" or "xlsx"');
     } catch (error) {
       this.logger.error(`Export failed: ${error.message}`);
       throw error;
@@ -68,65 +78,55 @@ export class ExportController {
   }
 
   /**
-   * GET /api/export/search/:query
-   * Export channels from a specific search to CSV or XLSX
+   * GET /api/export/search/:query?format=csv|xlsx
    */
   @Get('search/:query')
-  async exportSearchResults(
+  async exportSearch(
+    @Headers('authorization') authHeader: string,
     @Query('query') query: string,
-    @Query('format') format: 'csv' | 'xlsx' = 'xlsx',
+    @Query('format') format: string = 'csv',
     @Res() res: Response,
   ) {
     try {
-      if (!query) {
-        throw new BadRequestException('Query parameter is required');
+      const token = authHeader?.replace('Bearer ', '');
+      if (!token) {
+        throw new BadRequestException('Authorization required');
       }
 
-      this.logger.log(`Export search results - Query: ${query}, Format: ${format}`);
+      const supabaseUser = await this.authService.getUserFromToken(token);
+      if (!supabaseUser) {
+        throw new BadRequestException('Invalid token');
+      }
 
-      // Get channels matching the search (from database)
-      // This searches channels that were previously scraped with this query
-      const result = await this.channelsService.getChannels({
-        page: 1,
-        limit: 1000, // Get up to 1000 results
-      });
-
-      const channels = result.data;
+      // Get user's channels
+      const { channels } = await this.channelsService.getUserChannels(
+        supabaseUser.id,
+        1,
+        1000,
+      );
 
       if (channels.length === 0) {
-        throw new BadRequestException(
-          `No channels found for query: ${query}. Please search first.`,
-        );
+        return res.status(400).json({ error: 'No channels to export' });
       }
 
-      this.logger.log(`Exporting ${channels.length} channels as ${format.toUpperCase()}`);
+      this.logger.log(
+        `Exporting ${channels.length} channels as ${format.toUpperCase()}`,
+      );
 
-      if (format === 'csv') {
-        const csv = this.exportService.toCSV(channels);
-
-        res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-        res.setHeader(
-          'Content-Disposition',
-          `attachment; filename="${query}_${new Date().toISOString().split('T')[0]}.csv"`,
-        );
-        return res.send(csv);
-      }
-
-      if (format === 'xlsx') {
+      if (format.toLowerCase() === 'xlsx') {
         const buffer = await this.exportService.toXLSX(channels);
-
         res.setHeader(
           'Content-Type',
           'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         );
-        res.setHeader(
-          'Content-Disposition',
-          `attachment; filename="${query}_${new Date().toISOString().split('T')[0]}.xlsx"`,
-        );
+        res.setHeader('Content-Disposition', 'attachment; filename="channels.xlsx"');
         return res.send(buffer);
+      } else {
+        const csv = this.exportService.toCSV(channels);
+        res.setHeader('Content-Type', 'text/csv');
+        res.setHeader('Content-Disposition', 'attachment; filename="channels.csv"');
+        return res.send(csv);
       }
-
-      throw new BadRequestException('Format must be "csv" or "xlsx"');
     } catch (error) {
       this.logger.error(`Export search failed: ${error.message}`);
       throw error;
