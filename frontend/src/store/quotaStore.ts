@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import client from '../api/client';
 
 export interface Quota {
   used: number;
@@ -23,17 +24,9 @@ export const useQuotaStore = create<QuotaStore>((set) => ({
 
   fetchQuota: async () => {
     try {
-      const token = localStorage.getItem('auth_token');
-      if (!token) return;
+      const response = await client.get('/channels/quota');
 
-      const response = await fetch('http://localhost:3000/api/channels/quota', {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-
-      if (response.ok) {
-        const data = await response.json();
-        set({ quota: data.data });
-      }
+      set({ quota: response.data.data });
     } catch (error) {
       console.error('Failed to fetch quota:', error);
     }
