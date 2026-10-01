@@ -9,7 +9,7 @@ async function bootstrap() {
   app.enableCors({
     origin: process.env.NODE_ENV === 'development' 
       ? 'http://localhost:5173' // React dev port
-      : 'https://yourdomain.com',
+      : 'http://localhost:5173',
     credentials: true,
   });
 
