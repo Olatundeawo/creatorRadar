@@ -63,7 +63,7 @@ export const Home = () => {
 
             {/* Mobile menu button */}
             <div className="sm:hidden flex gap-2">
-              <ThemeToggle />
+              {/* <ThemeToggle /> */}
               <button
                 onClick={() => setShowMenu(!showMenu)}
                 className="p-2 rounded-lg bg-gray-200 dark:bg-gray-700"
