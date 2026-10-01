@@ -51,7 +51,7 @@ export const Home = () => {
 
             {/* Desktop buttons */}
             <div className="hidden sm:flex gap-2 lg:gap-3 flex-shrink-0">
-              <ThemeToggle />
+              {/* <ThemeToggle /> */}
               <button
                 onClick={logout}
                 className="p-2 lg:px-3 rounded-lg bg-red-600 hover:bg-red-700 text-white transition flex items-center gap-1 lg:gap-2 text-sm lg:text-base"
