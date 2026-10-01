@@ -1,41 +1,48 @@
 import { useEffect } from 'react';
-import { LogOut, Menu, Radar } from 'lucide-react';
+import { LogOut, Menu } from 'lucide-react';
 import { useAuthStore } from '../store/authStore';
 import { useAppStore } from '../store/appStore';
+import { useQuotaStore } from '../store/quotaStore';
 import { useChannelSearch } from '../hooks/useChannelSearch';
 import SearchBar from '../components/SearchBar';
 import ChannelTable from '../components/ChannelTable';
 import FilterPanel from '../components/FilterPanel';
 import ExportButton from '../components/ExportButton';
-import {LoadingSpinner} from '../components/LoadingSpinner';
-import  ThemeToggle from '../components/ThemeToggle';
+import { LoadingSpinner } from '../components/LoadingSpinner';
+import ThemeToggle from '../components/ThemeToggle';
+import QuotaWarning from '../components/QuotaWarning';
 import AnalyticsDashboard from '../components/AnalyticsDashboard';
 import { useState } from 'react';
 
 export const Home = () => {
   const { user, logout } = useAuthStore();
   const { loading, error, channels, filteredChannels, totalCount } = useAppStore();
+  const { fetchQuota } = useQuotaStore();
   const { getChannels } = useChannelSearch();
   const [showMenu, setShowMenu] = useState(false);
 
   useEffect(() => {
     getChannels(1);
-  }, [getChannels]);
+    // Fetch quota on mount
+    fetchQuota();
+
+    // Fetch quota every 5 minutes
+    const interval = setInterval(() => {
+      fetchQuota();
+    }, 5 * 60 * 1000);
+
+    return () => clearInterval(interval);
+  }, [getChannels, fetchQuota]);
 
   return (
-    <div className="min-h-screen bg-gray-100 dark:bg-gray-900 transition-colors duration-300">
+    <div className="min-h-screen bg-gray-100 dark:bg-gray-900 transition-colors">
       {/* Header */}
-      <header className="bg-white dark:bg-gray-800 shadow transition-colors duration-300">
+      <header className="bg-white dark:bg-gray-800 shadow">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 sm:py-6">
           <div className="flex justify-between items-start gap-4">
             <div className="flex-1 min-w-0">
-              <h1 className="flex items-center gap-2 text-gray-900 dark:text-white truncate" aria-label="CreatorRadar">
-                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-blue-600 text-white shadow-sm shadow-blue-600/30 sm:h-10 sm:w-10">
-                  <Radar size={22} strokeWidth={2.5} aria-hidden="true" />
-                </span>
-                <span className="truncate text-2xl font-semibold tracking-tight sm:text-3xl lg:text-4xl">
-                  <span className="text-gray-900 dark:text-gray-100">creator</span><span className="text-blue-600 dark:text-blue-400">Radar</span>
-                </span>
+              <h1 className="text-2xl sm:text-3xl lg:text-4xl font-bold text-gray-900 dark:text-white truncate">
+                <span className="text-gray-900 dark:text-gray-100">creator</span><span className="text-blue-600 dark:text-blue-400">Radar</span>
               </h1>
               <p className="text-xs sm:text-sm text-gray-600 dark:text-gray-400 mt-1 truncate">
                 {user?.email}
@@ -44,7 +51,7 @@ export const Home = () => {
 
             {/* Desktop buttons */}
             <div className="hidden sm:flex gap-2 lg:gap-3 flex-shrink-0">
-              {/* <ThemeToggle /> */}
+              <ThemeToggle />
               <button
                 onClick={logout}
                 className="p-2 lg:px-3 rounded-lg bg-red-600 hover:bg-red-700 text-white transition flex items-center gap-1 lg:gap-2 text-sm lg:text-base"
@@ -86,6 +93,9 @@ export const Home = () => {
 
       {/* Main content */}
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8">
+        {/* Quota Warning */}
+        <QuotaWarning />
+
         {/* Search Bar */}
         <div className="mb-6 sm:mb-8">
           <SearchBar />
