@@ -9,7 +9,7 @@ async function bootstrap() {
   app.enableCors({
     origin: process.env.NODE_ENV === 'development' 
       ? 'http://localhost:5173' // React dev port
-      : 'http://localhost:5173',
+      : 'https://creatorradar-alpha.vercel.app',
     credentials: true,
   });
 
